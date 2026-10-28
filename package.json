@@ -1,0 +1,15 @@
+{
+  "name": "tickmark",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --test test/*.test.js"
+  },
+  "dependencies": {
+    "@forge/api": "8.4.0",
+    "@forge/bridge": "7.2.1",
+    "@forge/react": "12.4.0",
+    "@forge/resolver": "2.0.2",
+    "react": "^18.3.1"
+  }
+}

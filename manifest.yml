@@ -1,0 +1,141 @@
+modules:
+  jira:issuePanel:
+    - key: tickmark-panel
+      resource: panel
+      resolver:
+        function: resolver
+      render: native
+      title: Control evidence
+      icon: resource:icons;tickmark.svg
+  jira:projectPage:
+    - key: tickmark-project
+      resource: project
+      resolver:
+        function: resolver
+      render: native
+      title: Control evidence
+  jira:entityProperty:
+    - key: tickmark-control-index
+      entityType: issue
+      propertyKey: tickmark
+      values:
+        - path: frequency
+          type: string
+        - path: controlId
+          type: string
+    - key: tickmark-request-index
+      entityType: issue
+      propertyKey: tickmark-request
+      values:
+        - path: control
+          type: string
+        - path: period
+          type: string
+  rovo:agent:
+    - key: tickmark-agent
+      name: Tickmark
+      icon: resource:icons;tickmark.svg
+      description: Tells control owners, testers and auditors which controls are
+        missing evidence for a period, what came in and when, and requests the
+        missing evidence from the control owner after the user confirms.
+      prompt: resource:agent;prompt.txt
+      conversationStarters:
+        - Which controls are missing evidence this quarter?
+        - What evidence has this control received?
+        - Request the missing evidence for this control
+      actions:
+        - evidence-status
+        - control-evidence
+        - request-evidence
+  rovo:mcp:
+    - key: tickmark-mcp
+      name: Tickmark tools
+      tools:
+        - evidence-status
+        - control-evidence
+        - request-evidence
+  action:
+    - key: evidence-status
+      name: Evidence status
+      function: evidenceStatus
+      actionVerb: GET
+      description: >
+        Lists the controls in a Jira project with the evidence status of each
+        period that ends in a quarter: reviewed, in, came in late, requested,
+        not requested, overdue or still running, with due dates, files and
+        request work items.
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: true
+          description: The key of the Jira project that holds the controls, for example
+            CTRL.
+        quarter:
+          title: Quarter
+          type: string
+          required: false
+          description: The quarter, for example 2026-Q3 or Q3 2026. Defaults to the
+            quarter being collected.
+    - key: control-evidence
+      name: Control evidence
+      function: controlEvidence
+      actionVerb: GET
+      description: >
+        Returns one control's setup and the evidence status of its recent
+        periods, with the files that came in and their dates.
+      inputs:
+        issueKey:
+          title: Control key
+          type: string
+          required: true
+          description: The key of the control work item, for example CTRL-12.
+    - key: request-evidence
+      name: Request evidence
+      function: requestEvidence
+      actionVerb: UPDATE
+      description: >
+        Creates a work item that asks the control owner for the evidence of one
+        period, due on the evidence due date and linked to the control. Skips
+        periods that already have a request.
+      inputs:
+        issueKey:
+          title: Control key
+          type: string
+          required: true
+          description: The key of the control work item, for example CTRL-12.
+        period:
+          title: Period
+          type: string
+          required: true
+          description: The period, for example 2026-09 (a month), 2026-Q3 (a quarter) or
+            2026 (a year).
+  function:
+    - key: resolver
+      handler: index.handler
+    - key: evidenceStatus
+      handler: index.evidenceStatus
+    - key: controlEvidence
+      handler: index.controlEvidence
+    - key: requestEvidence
+      handler: index.requestEvidence
+resources:
+  - key: panel
+    path: src/frontend/panel.jsx
+  - key: project
+    path: src/frontend/project.jsx
+  - key: agent
+    path: resources/agent
+  - key: icons
+    path: resources/icons
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/27d329a3-c516-419e-9edc-803373e761fe
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - read:jira-user
