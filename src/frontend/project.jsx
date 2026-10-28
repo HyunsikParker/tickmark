@@ -74,7 +74,6 @@ function App() {
   const options = data.quarters.map((q) => ({ label: q.label, value: q.value }));
   return (
     <Stack space="space.200">
-      <Heading size="medium">Control evidence</Heading>
       <Text>For each control in this project: the evidence that came in for each period, when, and what is still missing. A control is any work item set up in its Control evidence panel; its evidence is the files on the request work items Tickmark creates, or files on the control whose names carry the period. Dates are in UTC.</Text>
       {data.controls > 0 ? (
         <Stack space="space.150">
