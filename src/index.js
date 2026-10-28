@@ -1,5 +1,5 @@
 import Resolver from '@forge/resolver';
-import { controlsIn, requestsFor, getControl, setControl, createRequest, attachText, transitionToDone, requestType, request, siteUrl, myself, CONTROL } from './jira.js';
+import { controlsAndRequests, requestsFor, getControl, setControl, createRequests as createRequestsBulk, attachText, transitionToDone, requestType, request, siteUrl, myself, CONTROL } from './jira.js';
 import { quarterOverview, periodStatus, toRequest, headline, defaultQuarter, tracked } from './core/evidence.js';
 import { periodOf, shiftPeriod, periodLabel, dueDate, frequencyOf, FREQUENCIES, DEFAULT_GRACE } from './core/periods.js';
 import { samplePlan, sampleQuarter, SAMPLE_LABEL } from './core/sample.js';
@@ -16,38 +16,36 @@ export function parseQuarter(text) {
 
 async function overview(projectKey, quarterText) {
   const now = Date.now();
-  const controls = await controlsIn(projectKey);
-  const requests = await requestsFor(controls.map((c) => c.key));
+  const { controls, requests } = await controlsAndRequests(projectKey);
   const quarter = parseQuarter(quarterText) || defaultQuarter(controls, now);
   return { now, controls, requests, quarter, o: quarterOverview(controls, requests, quarter, now) };
 }
 
 const quarters = (now) => { const q = periodOf('quarterly', now); return [shiftPeriod(q, 1), q, shiftPeriod(q, -1), shiftPeriod(q, -2), shiftPeriod(q, -3)]; };
 
-async function createRequests(items, controls, projectKey) {
+async function createRequests(items, controls, projectKey, failed = []) {
   const byKey = new Map(controls.map((c) => [c.key, c]));
-  const created = [];
-  for (const it of items) {
+  const specs = items.filter((it) => byKey.has(it.key)).map((it) => {
     const control = byKey.get(it.key);
-    if (!control) continue;
-    const key = await createRequest({ control, period: it.period, periodLabel: periodLabel(it.period), due: ymd(dueDate(it.period, control.setup.graceDays)), projectKey: control.project || projectKey });
-    created.push({ key, control: control.key, period: it.period });
-  }
-  return created;
+    return { control, period: it.period, periodLabel: periodLabel(it.period), due: ymd(dueDate(it.period, control.setup.graceDays)), projectKey: control.project || projectKey };
+  });
+  return createRequestsBulk(specs, failed);
 }
 
 resolver.define('getOverview', async ({ payload, context }) => {
   const projectKey = context.extension.project.key;
-  const { now, o, controls } = await overview(projectKey, payload?.quarter);
-  return { ...o, headline: controls.length ? headline(o) : null, controls: controls.length, quarters: quarters(now).map((q) => ({ value: q, label: periodLabel(q) })), site: await siteUrl(), open: toRequest(o).length };
+  const [{ now, o, controls }, site] = await Promise.all([overview(projectKey, payload?.quarter), siteUrl()]);
+  return { ...o, headline: controls.length ? headline(o) : null, controls: controls.length, quarters: quarters(now).map((q) => ({ value: q, label: periodLabel(q) })), site, open: toRequest(o).length };
 });
 
 resolver.define('requestAllOpen', async ({ payload, context }) => {
   const projectKey = context.extension.project.key;
-  const { o, controls } = await overview(projectKey, payload?.quarter);
   try {
-    const created = await createRequests(toRequest(o), controls, projectKey);
-    return { ok: true, created };
+    const { o, controls } = await overview(projectKey, payload?.quarter);
+    const failed = [];
+    const created = await createRequests(toRequest(o), controls, projectKey, failed);
+    if (!created.length && failed.length) return { ok: false, error: failed[0].error };
+    return { ok: true, created, failed: failed.length };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -99,31 +97,25 @@ resolver.define('loadSample', async ({ context }) => {
   const projectKey = context.extension.project.key;
   const now = Date.now();
   try {
-    const type = await requestType(projectKey);
+    const existing = await request('POST', '/rest/api/3/search/jql', { jql: `project = "${projectKey}" AND labels = "${SAMPLE_LABEL}"`, fields: ['summary'], maxResults: 1 });
+    if (existing?.issues?.length) return { ok: false, error: `This project already has the sample controls (for example ${existing.issues[0].key}).` };
+    const [type, me] = await Promise.all([requestType(projectKey), myself()]);
     if (!type) return { ok: false, error: `No work type in ${projectKey} can be created.` };
-    const me = await myself();
     const plan = samplePlan(now);
-    const keys = [];
-    for (const c of plan) {
-      const fields = { project: { key: projectKey }, issuetype: { id: type.id }, summary: `${c.id} ${c.name}`, labels: [SAMPLE_LABEL],
-        description: doc([`Sample control created by Tickmark for a fictional company. Evidence: ${c.evidence}`]) };
-      let issue;
-      try {
-        issue = await request('POST', '/rest/api/3/issue', { fields: { ...fields, assignee: { accountId: me.accountId } } });
-      } catch {
-        const { labels, ...rest } = fields;
-        issue = await request('POST', '/rest/api/3/issue', { fields: rest });
-      }
-      await setControl(issue.key, c.setup);
-      keys.push(issue.key);
-      const control = { key: issue.key, summary: `${c.id} ${c.name}`, owner: { accountId: me.accountId }, setup: c.setup, project: projectKey };
-      for (const f of c.controlFiles) await attachText(issue.key, f, c.files[f]);
-      for (const r of c.requests) {
-        const [made] = await createRequests([{ key: issue.key, period: r.period }], [control], projectKey);
-        for (const f of r.files) await attachText(made.key, f, c.files[f]);
-        if (r.done) await transitionToDone(made.key);
-      }
-    }
+    // All eight controls in one bulk create, each with its setup property; without labels and assignee if refused.
+    const make = (c, lean) => ({ fields: { project: { key: projectKey }, issuetype: { id: type.id }, summary: `${c.id} ${c.name}`,
+      description: doc([`Sample control created by Tickmark for a fictional company. Evidence: ${c.evidence}`]),
+      ...(lean ? {} : { labels: [SAMPLE_LABEL], assignee: { accountId: me.accountId } }) }, properties: [{ key: CONTROL, value: c.setup }] });
+    let bulk = await request('POST', '/rest/api/3/issue/bulk', { issueUpdates: plan.map((c) => make(c, false)) }).catch(() => null);
+    if (!bulk?.issues?.length || bulk.issues.length < plan.length) bulk = await request('POST', '/rest/api/3/issue/bulk', { issueUpdates: plan.map((c) => make(c, true)) });
+    const keys = bulk.issues.map((i) => i.key);
+    const controls = plan.map((c, i) => ({ key: keys[i], summary: `${c.id} ${c.name}`, owner: { accountId: me.accountId }, setup: c.setup, project: projectKey }));
+    await Promise.all(plan.flatMap((c, i) => c.controlFiles.map((f) => attachText(keys[i], f, c.files[f]))));
+    const asks = plan.flatMap((c, i) => c.requests.map((r) => ({ c, i, r })));
+    const made = await createRequests(asks.map(({ i, r }) => ({ key: keys[i], period: r.period })), controls, projectKey);
+    const byAsk = (a) => made.find((m) => m.control === keys[a.i] && m.period === a.r.period);
+    await Promise.all(asks.flatMap((a) => (byAsk(a) ? a.r.files.map((f) => attachText(byAsk(a).key, f, a.c.files[f])) : [])));
+    await Promise.all(asks.filter((a) => a.r.done && byAsk(a)).map((a) => transitionToDone(byAsk(a).key)));
     return { ok: true, keys, quarter: sampleQuarter(now) };
   } catch (e) {
     return { ok: false, error: e.message };

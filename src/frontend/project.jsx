@@ -24,7 +24,7 @@ function Overview({ data }) {
 
 function RequestAll({ data, onDone }) {
   const [state, setState] = useState(null);
-  if (!data.open) return null;
+  if (!data.open && !state) return null;
   const go = async () => {
     setState({ busy: true });
     const r = await invoke('requestAllOpen', { quarter: data.quarter }).catch((e) => ({ ok: false, error: String(e) }));
@@ -33,9 +33,9 @@ function RequestAll({ data, onDone }) {
   };
   return (
     <Stack space="space.100">
-      <Inline><Button appearance="primary" isDisabled={state?.busy} onClick={go}>{state?.busy ? 'Creating requests…' : `Request evidence for ${data.open} open period${data.open === 1 ? '' : 's'}`}</Button></Inline>
-      <Text size="small">Creates one work item per control and period, assigned to the control owner and due on the evidence due date. Periods that already have a request are skipped.</Text>
-      {state?.ok && <SectionMessage appearance="success"><Text>{`Created ${state.created.map((c) => c.key).join(', ')}.`}</Text></SectionMessage>}
+      {data.open > 0 && <Inline><Button appearance="primary" isDisabled={state?.busy} onClick={go}>{state?.busy ? 'Creating requests…' : `Request evidence for ${data.open} open period${data.open === 1 ? '' : 's'}`}</Button></Inline>}
+      {data.open > 0 && <Text size="small">Creates one work item per control and period, assigned to the control owner and due on the evidence due date. Periods that already have a request are skipped.</Text>}
+      {state?.ok && <SectionMessage appearance="success"><Text>{`Created ${state.created.map((c) => c.key).join(', ')}, assigned to the control owners.${state.failed ? ` ${state.failed} could not be created; press the button again.` : ''}`}</Text></SectionMessage>}
       {state && state.ok === false && <SectionMessage appearance="error"><Text>{state.error}</Text></SectionMessage>}
     </Stack>
   );
@@ -66,7 +66,7 @@ function App() {
   const [error, setError] = useState(null);
   const [version, setVersion] = useState(0);
   useEffect(() => {
-    setData(null);
+    if (version === 0) setData(null);
     invoke('getOverview', { quarter }).then(setData).catch((e) => setError(String(e)));
   }, [quarter, version]);
   if (error) return <SectionMessage appearance="error"><Text>{error}</Text></SectionMessage>;

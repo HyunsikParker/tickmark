@@ -7,9 +7,18 @@ const JSON_HEADERS = { 'Content-Type': 'application/json', Accept: 'application/
 const FIELDS = ['summary', 'assignee', 'attachment', 'status', 'duedate', 'created', 'project', 'issuetype'];
 const MAX = 500;
 
+const RETRY = new Set([429, 502, 503, 504]);
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function call(path, options = {}) {
-  const res = await api.asUser().requestJira(path, { headers: JSON_HEADERS, ...options });
-  if (!res.ok) throw new Error(`Jira ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  let res;
+  // Jira answers 503 or 429 now and then; try twice more before giving up.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await api.asUser().requestJira(path, { headers: JSON_HEADERS, ...options });
+    if (!RETRY.has(res.status)) break;
+    await pause(800 * (attempt + 1));
+  }
+  if (!res.ok) throw new Error(`Jira ${res.status}: ${res.status >= 500 ? 'Jira is not answering right now; try again in a minute.' : (await res.text()).slice(0, 300)}`);
   if (res.status === 204) return null;
   const text = await res.text();
   return text ? JSON.parse(text) : null;
@@ -52,12 +61,22 @@ export async function controlsIn(projectKey) {
   return issues.map(toControl).filter((c) => c.setup?.frequency);
 }
 
+// Controls and their requests in one search: Tickmark creates requests in the control's project.
+export async function controlsAndRequests(projectKey) {
+  const issues = await search(`project = ${quote(projectKey)} AND (issue.property[${CONTROL}].frequency IS NOT EMPTY OR issue.property[${REQUEST}].control IS NOT EMPTY) ORDER BY key ASC`, [CONTROL, REQUEST]);
+  const controls = issues.filter((i) => i.properties?.[CONTROL]?.frequency).map(toControl);
+  const requests = issues.filter((i) => i.properties?.[REQUEST]?.control).map(toRequest).sort((a, b) => Date.parse(a.created) - Date.parse(b.created));
+  return { controls, requests };
+}
+
+// Requests live in the controls' projects (Tickmark creates them there); scoping the search keeps it fast.
 export async function requestsFor(controlKeys) {
   if (!controlKeys.length) return [];
+  const projects = [...new Set(controlKeys.map((k) => k.replace(/-\d+$/, '')))].map(quote).join(', ');
   const out = [];
   for (let i = 0; i < controlKeys.length; i += 50) {
     const keys = controlKeys.slice(i, i + 50).map(quote).join(', ');
-    out.push(...(await search(`issue.property[${REQUEST}].control IN (${keys}) ORDER BY created ASC`, [REQUEST])).map(toRequest));
+    out.push(...(await search(`project IN (${projects}) AND issue.property[${REQUEST}].control IN (${keys}) ORDER BY created ASC`, [REQUEST])).map(toRequest));
   }
   return out;
 }
@@ -80,11 +99,12 @@ export async function requestType(projectKey) {
 
 const doc = (paragraphs) => ({ type: 'doc', version: 1, content: paragraphs.map((t) => ({ type: 'paragraph', content: [{ type: 'text', text: t }] })) });
 
-// One request work item per control and period, assigned to the control owner and due on the evidence due date.
-export async function createRequest({ control, period, periodLabel, due, projectKey }) {
-  const type = await requestType(projectKey);
-  if (!type) throw new Error(`No work type in ${projectKey} can be created.`);
-  const name = control.setup.controlId ? `${control.setup.controlId} ${control.summary.replace(new RegExp(`^${control.setup.controlId}\\s*[:-]?\\s*`), '')}` : control.summary;
+// Request work items, one per control and period, assigned to the control owner and due on the evidence due date.
+// One bulk create carries the fields and the request property; the links to the controls are added in parallel.
+function requestFields(spec, type) {
+  const { control, periodLabel, due, projectKey } = spec;
+  const id = control.setup.controlId;
+  const name = id ? `${id} ${control.summary.replace(new RegExp(`^${id}\\s*[:-]?\\s*`), '')}` : control.summary;
   const fields = {
     project: { key: projectKey },
     issuetype: { id: type.id },
@@ -97,17 +117,39 @@ export async function createRequest({ control, period, periodLabel, due, project
     duedate: due,
   };
   if (control.owner?.accountId) fields.assignee = { accountId: control.owner.accountId };
-  let created;
-  try {
-    created = await call(route`/rest/api/3/issue`, { method: 'POST', body: JSON.stringify({ fields }) });
-  } catch (e) {
-    // Some create screens refuse the due date or the assignee; create without them rather than fail.
-    const { duedate, assignee, ...rest } = fields;
-    created = await call(route`/rest/api/3/issue`, { method: 'POST', body: JSON.stringify({ fields: rest }) });
+  return fields;
+}
+
+export async function createRequests(specs, failed = []) {
+  if (!specs.length) return [];
+  const types = new Map();
+  for (const sp of specs) if (!types.has(sp.projectKey)) types.set(sp.projectKey, await requestType(sp.projectKey));
+  const missing = specs.find((sp) => !types.get(sp.projectKey));
+  if (missing) throw new Error(`No work type in ${missing.projectKey} can be created.`);
+  const update = (sp, lean) => {
+    const fields = requestFields(sp, types.get(sp.projectKey));
+    if (lean) { delete fields.duedate; delete fields.assignee; }
+    return { fields, properties: [{ key: REQUEST, value: { control: sp.control.key, period: sp.period } }] };
+  };
+  const res = await call(route`/rest/api/3/issue/bulk`, { method: 'POST', body: JSON.stringify({ issueUpdates: specs.map((sp) => update(sp, false)) }) }).catch((e) => ({ issues: [], errors: specs.map((_, i) => ({ failedElementNumber: i, message: e.message })) }));
+  const done = new Map();
+  const ok = res.issues || [];
+  // Bulk results come back in request order for the elements that succeeded.
+  const failedIdx = new Set((res.errors || []).map((e) => e.failedElementNumber));
+  let k = 0;
+  specs.forEach((sp, i) => { if (!failedIdx.has(i) && ok[k]) done.set(i, ok[k++].key); });
+  // Some create screens refuse the due date or the assignee: create those without them.
+  for (const i of failedIdx) {
+    try {
+      const one = await call(route`/rest/api/3/issue`, { method: 'POST', body: JSON.stringify(update(specs[i], true)) });
+      done.set(i, one.key);
+    } catch (e) {
+      failed.push({ control: specs[i].control.key, period: specs[i].period, error: e.message });
+    }
   }
-  await call(route`/rest/api/3/issue/${created.key}/properties/${REQUEST}`, { method: 'PUT', body: JSON.stringify({ control: control.key, period }) });
-  await call(route`/rest/api/3/issueLink`, { method: 'POST', body: JSON.stringify({ type: { name: 'Relates' }, inwardIssue: { key: created.key }, outwardIssue: { key: control.key } }) }).catch(() => null);
-  return created.key;
+  const created = [...done.entries()].sort((a, b) => a[0] - b[0]).map(([i, key]) => ({ key, control: specs[i].control.key, period: specs[i].period }));
+  await Promise.all(created.map((c) => call(route`/rest/api/3/issueLink`, { method: 'POST', body: JSON.stringify({ type: { name: 'Relates' }, inwardIssue: { key: c.key }, outwardIssue: { key: c.control } }) }).catch(() => null)));
+  return created;
 }
 
 // A small text file as an attachment (the sample loader's evidence files).
