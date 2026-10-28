@@ -128,17 +128,18 @@ export const handler = resolver.getDefinitions();
 const KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
 const PROJECT = /^[A-Z][A-Z0-9_]+$/;
 
-function compact(o) {
-  return { quarter: o.label, headline: headline(o), controls: o.rows.map((r) => ({ key: r.key, control: r.controlId, summary: r.summary, owner: r.owner?.displayName || 'unassigned', keyControl: r.keyControl, state: r.state,
-    periods: r.periods.map((p) => ({ period: p.label, periodId: p.period, state: p.state, detail: p.text, request: p.request?.key || null, files: p.evidence.map((e) => e.file) })) })) };
+function compact(o, site) {
+  const url = (k) => (k ? `${site}/browse/${k}` : null);
+  return { quarter: o.label, headline: headline(o), controls: o.rows.map((r) => ({ key: r.key, url: url(r.key), control: r.controlId, summary: r.summary, owner: r.owner?.displayName || 'unassigned', keyControl: r.keyControl, state: r.state,
+    periods: r.periods.map((p) => ({ period: p.label, periodId: p.period, state: p.state, detail: p.text, request: p.request?.key || null, requestUrl: url(p.request?.key), files: p.evidence.map((e) => e.file) })) })) };
 }
 
 export async function evidenceStatus(payload) {
   const projectKey = String(payload?.projectKey || '').trim().toUpperCase();
   if (!PROJECT.test(projectKey)) return { error: 'Give the Jira project key, for example CTRL.' };
-  const { o, controls } = await overview(projectKey, payload?.quarter);
+  const [{ o, controls }, site] = await Promise.all([overview(projectKey, payload?.quarter), siteUrl()]);
   if (!controls.length) return { error: `No work item in ${projectKey} is set up as a control.` };
-  return compact(o);
+  return compact(o, site);
 }
 
 export async function controlEvidence(payload) {
@@ -146,7 +147,7 @@ export async function controlEvidence(payload) {
   if (!KEY.test(key)) return { error: 'Give the key of the control work item, for example CTRL-12.' };
   const v = await controlView(key);
   if (!v.control) return { error: `${key} is not set up as a control.` };
-  return { key, control: v.control.setup.controlId, summary: v.control.summary, owner: v.control.owner?.displayName || 'unassigned', frequency: v.control.setup.frequency,
+  return { key, url: `${v.site}/browse/${key}`, control: v.control.setup.controlId, summary: v.control.summary, owner: v.control.owner?.displayName || 'unassigned', frequency: v.control.setup.frequency,
     evidenceNeeded: v.control.setup.evidence, periods: v.periods.map((p) => ({ period: p.label, periodId: p.period, state: p.state, detail: p.text, request: p.request?.key || null, files: p.evidence.map((e) => `${e.file} (${ymd(e.at)})`) })) };
 }
 
@@ -162,5 +163,5 @@ export async function requestEvidence(payload) {
   const existing = (await requestsFor([key])).find((r) => r.period === p);
   if (existing) return { ok: true, existing: existing.key, message: `Evidence for ${periodLabel(p)} was already requested in ${existing.key}.` };
   const [created] = await createRequests([{ key, period: p }], [control], control.project);
-  return { ok: true, created: created.key, message: `Requested the evidence for ${periodLabel(p)} in ${created.key}, assigned to ${control.owner?.displayName || 'nobody (the control has no owner)'}.` };
+  return { ok: true, created: created.key, url: `${await siteUrl()}/browse/${created.key}`, message: `Requested the evidence for ${periodLabel(p)} in ${created.key}, assigned to ${control.owner?.displayName || 'nobody (the control has no owner)'}.` };
 }

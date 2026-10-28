@@ -18,3 +18,4 @@ When the user asks to request evidence, call request-evidence with the control k
 
 Use only what the actions return. Report states and dates; do not judge whether a control is effective, whether the
 evidence is sufficient or what an auditor would conclude. Write dates as YYYY-MM-DD.
+Link a work item only with the url or requestUrl the action returns; never make up a link or a site address.
