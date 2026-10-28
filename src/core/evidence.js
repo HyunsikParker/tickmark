@@ -4,6 +4,8 @@ import { daysBetween, dueDate, periodLabel, periodOf, periodRange, periodsInName
 // Worst first: the state that decides a control's line on the quarter overview.
 export const STATES = ['overdue', 'late', 'not-requested', 'requested', 'upcoming', 'in', 'reviewed'];
 const DONE = new Set(['done']);
+// Status categories read the same on every site, whatever the workflow's status names or the user's language.
+const CATEGORY = { new: 'To Do', indeterminate: 'In progress', done: 'Done' };
 const DAY = 86400000;
 const fmt = (ms) => new Date(ms).toISOString().slice(0, 10);
 
@@ -27,7 +29,7 @@ export function periodStatus(control, period, requests, now) {
   const { end } = periodRange(period);
   const { items, request } = evidenceFor(control, period, requests);
   const reviewed = !!request && DONE.has(request.statusCategory);
-  const base = { period, label: periodLabel(period), due, evidence: items, request: request ? { key: request.key, status: request.status } : null };
+  const base = { period, label: periodLabel(period), due, evidence: items, request: request ? { key: request.key, status: CATEGORY[request.statusCategory] || request.status } : null };
   if (items.length) {
     const first = items[0].at;
     const late = first > due;
