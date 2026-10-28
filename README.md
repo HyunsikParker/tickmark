@@ -24,6 +24,16 @@ Built on Atlassian Forge for Codegeist 2026.
 - **Load sample controls** creates eight controls of a fictional company, with evidence files and requests timed so
   that the last completed quarter shows every state.
 
+## Screenshots
+
+![Control evidence page: each control's evidence by period for the chosen quarter, worst first, with one button to request what is missing.](docs/images/1-quarter-overview.jpg)
+
+![The Control evidence panel on a control lists its periods with status, files, dates and request work items.](docs/images/4-control-panel.jpg)
+
+![The Tickmark agent in Rovo lists the overdue periods for Q3 2026, with links to the controls and the requests.](docs/images/7-rovo-answer.jpg)
+
+The screenshots show fictional sample data.
+
 ## How evidence is read
 
 - Periods are calendar months, quarters and years in UTC. Evidence for a period is due a set number of days after it
