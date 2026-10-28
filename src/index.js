@@ -87,7 +87,9 @@ resolver.define('requestOne', async ({ payload, context }) => {
   if (!control.setup?.frequency) return { ok: false, error: 'This work item is not set up as a control.' };
   const existing = (await requestsFor([key])).find((r) => r.period === payload.period);
   if (existing) return { ok: true, created: null, existing: existing.key, view: await controlView(key) };
-  const [created] = await createRequests([{ key, period: payload.period }], [control], control.project);
+  const failed = [];
+  const [created] = await createRequests([{ key, period: payload.period }], [control], control.project, failed);
+  if (!created) return { ok: false, error: failed[0]?.error || 'Jira did not create the request.' };
   return { ok: true, created: created.key, view: await controlView(key) };
 });
 
@@ -162,6 +164,8 @@ export async function requestEvidence(payload) {
   if (frequencyOf(p) !== control.setup.frequency) return { error: `${key} runs ${control.setup.frequency}; give a period of that length.` };
   const existing = (await requestsFor([key])).find((r) => r.period === p);
   if (existing) return { ok: true, existing: existing.key, message: `Evidence for ${periodLabel(p)} was already requested in ${existing.key}.` };
-  const [created] = await createRequests([{ key, period: p }], [control], control.project);
+  const failed = [];
+  const [created] = await createRequests([{ key, period: p }], [control], control.project, failed);
+  if (!created) return { error: `Could not create the request: ${failed[0]?.error || 'Jira did not create the work item.'}` };
   return { ok: true, created: created.key, url: `${await siteUrl()}/browse/${created.key}`, message: `Requested the evidence for ${periodLabel(p)} in ${created.key}, assigned to ${control.owner?.displayName || 'nobody (the control has no owner)'}.` };
 }
